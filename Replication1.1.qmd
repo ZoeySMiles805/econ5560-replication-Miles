@@ -1,0 +1,384 @@
+---
+title: "Replication Project 1.1"
+format: html
+editor: visual
+execute:
+  warning: false
+  echo: false
+  cache: true
+---
+
+## All Tables, Figures, and Models (version 1.1)
+
+```{r}
+# Load in libraries
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(mlogit)
+library(dfidx)
+```
+
+```{r}
+# Load the revised dataset (
+data <- read_excel("MPA_journal_data_with_choice_for_CalPolyFA2026.xlsx",
+                   sheet = "Data")
+```
+
+```{r}
+#Summary Stats Table
+# One row per respondent
+data_sub <- data |>
+  select(record_id, survey_type, gender, age,
+         annual_income, birth_location, children_HH) |>
+  distinct() |>
+  mutate(
+    age            = as.numeric(age),
+    children_HH    = as.numeric(children_HH),
+    gender_female  = as.integer(gender == 2),
+    okinawa        = as.integer(birth_location == 1),
+    income         = as.numeric(annual_income),
+    # revised income
+    income_revised = if_else(income == 6, NA_real_, income)
+  )
+
+summary_table <- data_sub |>
+  group_by(survey_type) |>
+  summarise(
+    n                    = n(),
+    n_income_revised     = sum(!is.na(income_revised)),
+    Gender_mean          = mean(gender_female, na.rm = TRUE),
+    Gender_sd            = sd(gender_female, na.rm = TRUE),
+    Age_mean             = mean(age, na.rm = TRUE),
+    Age_sd               = sd(age, na.rm = TRUE),
+    Income_mean          = mean(income, na.rm = TRUE),
+    Income_sd            = sd(income, na.rm = TRUE),
+    IncomeRev_mean       = mean(income_revised, na.rm = TRUE),
+    IncomeRev_sd         = sd(income_revised, na.rm = TRUE),
+    Okinawa_pct          = mean(okinawa, na.rm = TRUE) * 100,
+    Children_mean        = mean(children_HH, na.rm = TRUE),
+    Children_sd          = sd(children_HH, na.rm = TRUE)
+  )
+
+formatted_summary <- summary_table |>
+  transmute(
+    survey_type,
+    Gender             = sprintf("%.2f (%.2f)", Gender_mean, Gender_sd),
+    Age                = sprintf("%.2f (%.2f)", Age_mean, Age_sd),
+    Income             = sprintf("%.2f (%.2f)", Income_mean, Income_sd),
+    `Income (revised)` = sprintf("%.2f (%.2f)", IncomeRev_mean, IncomeRev_sd),
+    Okinawa            = sprintf("%.0f%%", Okinawa_pct),
+    Children           = sprintf("%.2f (%.2f)", Children_mean, Children_sd)
+  ) |>
+  pivot_longer(-survey_type, names_to = "Variable", values_to = "value") |>
+  mutate(Variable = factor(Variable, levels = unique(Variable))) |>  # keep row order
+  pivot_wider(names_from = survey_type, values_from = value) |>
+  mutate(Variable = as.character(Variable)) |>
+  # survey_type 1 = national, 2 = community (named, not positional)
+  rename(`National Based MPA management regime Survey`  = `1`,
+         `Community Based MPA management regime Survey` = `2`)
+
+n_valid <- summary_table$n_income_revised
+n_all   <- summary_table$n
+
+formatted_summary |>
+  kable(escape = FALSE) |>
+  kable_styling() |>
+  row_spec(which(formatted_summary$Variable == "Income (revised)"), bold = TRUE) |>
+  footnote(general = c(
+    "Cells show mean (standard deviation); Okinawa is the percent born in Okinawa.",
+    "Income keeps code 6 ('don't know / prefer not to answer') as the number 6, which is how the paper's Table 2 is reproduced.",
+    sprintf("Income (revised) sets code 6 to missing. Valid income responses: %d of %d (national), %d of %d (community).",
+            n_valid[1], n_all[1], n_valid[2], n_all[2])),
+    general_title = "Note: ", footnote_as_chunk = FALSE)
+```
+
+```{r}
+#Randomized Stuff
+set.seed(0215)  # Seeding for replicable results
+data_choice <- data |>
+  mutate(across(c(record_id, survey_type, Cid, ASC, record_iidd,
+                  fish_catch, coral_coverage, coastal_conditions, contribution),
+                as.numeric)) |>
+  arrange(Cid, desc(ASC), record_iidd) |>   # puts default last
+  group_by(Cid) |>
+  mutate(alt           = row_number(),                          # 1, 2 = MPA options; 3 = status quo
+         choice_random = as.integer(alt == sample(n(), 1))) |>  # one random choice per question
+  ungroup() |>
+  mutate(community   = as.integer(survey_type == 2),            # 1 = community based
+         choice_real = as.integer(Choice))                      # observed choice
+
+# fact check code
+stopifnot(
+  all(count(data_choice, Cid)$n == 3),
+  all(summarise(group_by(data_choice, Cid), k = sum(choice_random))$k == 1),
+  all(summarise(group_by(data_choice, Cid), k = sum(choice_real))$k == 1),
+  all(data_choice$ASC[data_choice$alt == 3] == 0),
+  all(data_choice$alt == data_choice$Alt)   )
+
+```
+
+```{r}
+#actual model time
+make_mdata <- function(df, choice_col) {
+  model_df <- df |>
+    transmute(
+      Cid = as.integer(Cid), record_id = as.integer(record_id), alt = as.integer(alt),
+      choice             = as.logical(.data[[choice_col]]),
+      fish_catch         = as.numeric(fish_catch),
+      coral_coverage     = as.numeric(coral_coverage),
+      coastal_conditions = as.numeric(coastal_conditions),
+      payment            = as.numeric(contribution),
+      ASC                = as.numeric(ASC),
+      community          = as.numeric(community),
+      fish_comm          = fish_catch * community,
+      coral_comm         = coral_coverage * community,
+      coastal_comm       = coastal_conditions * community,
+      pay_comm           = payment * community,
+      ASC_comm           = ASC * community
+    ) |>
+    as.data.frame()
+  # panel structure: choice situation (Cid) nested within respondent (record_id)
+  dfidx(model_df, idx = list(c("Cid", "record_id"), "alt"))
+}
+
+# Model formulas
+f1 <- choice ~ fish_catch + coral_coverage + coastal_conditions + payment + ASC | -1
+f2 <- choice ~ fish_catch + coral_coverage + coastal_conditions + payment + ASC +
+  fish_comm + coral_comm + coastal_comm + pay_comm + ASC_comm | -1
+
+rpar1 <- c(fish_catch = "n", coral_coverage = "n", coastal_conditions = "n",
+           payment = "n", ASC = "n")
+rpar2 <- c(rpar1, fish_comm = "n", coral_comm = "n", coastal_comm = "n",
+           pay_comm = "n", ASC_comm = "n")
+
+# m0 = basic 
+# m1 = Model 1 (mixed logit, main effects)
+# m2 = Model 2 (mixed logit, main effects + community interactions)
+
+fit_models <- function(mdata) {
+  m0 <- mlogit(f1, data = mdata)
+  b0 <- coef(m0)
+
+  m1 <- mlogit(f1, data = mdata, rpar = rpar1,
+               R = 500, halton = NA, panel = TRUE,
+               start = c(b0, abs(b0) / 2))          # means, then sds
+  b1 <- coef(m1)
+  means1 <- b1[1:5]
+  sds1   <- abs(b1[6:10])
+
+  m2 <- mlogit(f2, data = mdata, rpar = rpar2,
+               R = 500, halton = NA, panel = TRUE,
+               start = c(means1, rep(0, 5),          # means: main effects, interactions
+                         sds1, sds1 / 2))            # sds:   main effects, interactions
+  stopifnot(as.numeric(logLik(m1)) >= as.numeric(logLik(m0)) - 1e-6,
+            as.numeric(logLik(m2)) >= as.numeric(logLik(m1)) - 1e-6)
+  list(m0 = m0, m1 = m1, m2 = m2)
+}
+
+mdata_real   <- make_mdata(data_choice, "choice_real")
+mdata_random <- make_mdata(data_choice, "choice_random")
+```
+
+```{r}
+# Observed-choice models 
+models_real <- fit_models(mdata_real)
+```
+
+```{r}
+# Randomized-choice models 
+models_random <- fit_models(mdata_random)
+```
+
+```{r}
+# Coefficients from paper
+paper_m1 <- c(
+  fish_catch         = "0.0069** (0.0027)",
+  coral_coverage     = "0.0360*** (0.0033)",
+  coastal_conditions = "0.0096*** (0.0029)",
+  payment            = "-0.0055*** (0.0003)",
+  ASC                = "8.220*** (0.768)"
+)
+
+paper_m2 <- c(
+  fish_catch         = "0.0035 (0.0035)",
+  coral_coverage     = "0.0299*** (0.0041)",
+  coastal_conditions = "0.005 (0.0038)",
+  payment            = "-0.0052*** (0.0004)",
+  ASC                = "8.461*** (0.767)",
+  fish_comm          = "0.00758 (0.0058)",
+  coral_comm         = "0.0168** (0.0068)",
+  coastal_comm       = "0.0105* (0.0061)",
+  pay_comm           = "-0.0011** (0.0006)",
+  ASC_comm           = "0.225 (0.743)"
+)
+
+
+paper_wtp_m1 <- c("1489.0*** (147.8)", "1.244** (0.503)",
+                  "6.524*** (0.616)",  "1.744*** (0.530)")
+paper_wtp_m2 <- c("1631.7*** (161.8)", "0.677 (0.680)",
+                  "5.766*** (0.821)",  "0.958 (0.734)",
+                  "1373.8*** (137.5)", "1.754** (0.745)",
+                  "7.383*** (0.920)",  "2.447*** (0.766)")
+```
+
+```{r}
+var_labels <- c(
+  fish_catch         = "Fish Catch",
+  coral_coverage     = "Coral Coverage",
+  coastal_conditions = "Coastal Development Restrictions",
+  payment            = "Payment",
+  ASC                = "ASC",
+  fish_comm          = "Fish Catch (Community based MPA)",
+  coral_comm         = "Coral Coverage (Community based MPA)",
+  coastal_comm       = "Coastal Development Restrictions (Community based MPA)",
+  pay_comm           = "Payment (Community based MPA)",
+  ASC_comm           = "ASC (Community based MPA)"
+)
+
+sig_stars <- function(p) case_when(p < 0.01 ~ "***", p < 0.05 ~ "**", p < 0.10 ~ "*", TRUE ~ "")
+
+n_resp <- length(unique(data_choice$record_id))
+n_cs   <- length(unique(data_choice$Cid))
+
+results_table <- function(model, paper = NULL, placeholder = FALSE) {
+  ct <- summary(model)$CoefTable
+  k  <- nrow(ct) / 2                      # k means followed by k standard deviations
+  stars <- sig_stars
+  has_paper <- !is.null(paper)
+  mean_ct <- ct[1:k, , drop = FALSE]
+  sd_ct   <- ct[(k + 1):(2 * k), , drop = FALSE]
+  stopifnot(identical(paste0("sd.", rownames(mean_ct)), rownames(sd_ct)))
+  if (has_paper) stopifnot(all(rownames(mean_ct) %in% names(paper)))
+
+  # Each variable takes two table rows
+  coef_top <- function(m) paste0(formatC(m[, 1], format = "f", digits = 4), stars(m[, 4]))
+  se_below <- function(m) paste0("(", formatC(m[, 2], format = "f", digits = 4), ")")
+  stack    <- function(top, below) as.vector(rbind(top, below))
+
+  tab <- data.frame(Variable = stack(unname(var_labels[rownames(mean_ct)]),
+                                     rep("", k)),
+                    check.names = FALSE, row.names = NULL)
+  if (has_paper) {
+    # the paper's cells are stored as "coef*** (SE)": split into the two lines
+    p <- unname(paper[rownames(mean_ct)])
+    tab[["Paper"]] <- stack(sub(" \\(.*$", "", p), sub("^.* ", "", p))
+  }
+  tab[["Replication"]] <- stack(coef_top(mean_ct), se_below(mean_ct))
+  tab[["Replication "]] <- stack(coef_top(sd_ct),  se_below(sd_ct))   # standard deviations
+  names(tab) <- c("Variable", if (has_paper) "Paper", "Replication", "Replication")
+
+  n_mean_cols <- 1 + has_paper            # columns in the "Coefficient (mean)" block
+  sd_first    <- 2 + n_mean_cols          # position of the standard-deviation column
+
+  notes <- c(
+    paste0("Respondents: ", n_resp, ". Choice situations: ", n_cs, "."),
+    "Standard errors are in parentheses under each coefficient. * p < 0.10, ** p < 0.05, *** p < 0.01. All coefficients are random normal. Payment is in yen per month.")
+  if (has_paper) {
+    notes <- c(notes,
+      "Paper: coefficients and standard errors as printed in Table 3 of Shah et al. (2019), PLOS ONE 14(3): e0213354 (827 respondents). The paper's standard deviations are not shown here.")
+  }
+  if (placeholder) {
+    notes <- c(notes,
+      "CAUTION: the choice variable is randomly generated, so these estimates are placeholders for comparison only.")
+  }
+
+  tab |>
+    kable(row.names = FALSE,
+          align = paste0("l", strrep("c", n_mean_cols + 1))) |>
+    kable_styling(bootstrap_options = c("condensed"), full_width = FALSE, font_size = 14) |>
+    add_header_above(c(" " = 1, "Coefficient (mean)" = n_mean_cols, "Standard deviation" = 1),
+                     bold = TRUE) |>
+    row_spec(0, bold = TRUE, extra_css = "border-bottom: 1.5px solid #333333;") |>
+    column_spec(sd_first, border_left = TRUE) |>
+    footnote(general = notes, general_title = "Note: ", footnote_as_chunk = FALSE)
+}
+
+```
+
+```{r}
+results_table(models_real$m1, paper = paper_m1)
+```
+
+
+```{r}
+results_table(models_real$m2, paper = paper_m2)
+```
+
+```{r}
+# Delta-method WTP: ratio -(sum of `num` coefficients) / (sum of `den` coefficients)
+wtp_est <- function(model, num, den) {
+  b <- coef(model)
+  V <- vcov(model)
+  stopifnot(all(c(num, den) %in% names(b)))
+  a <- sum(b[num])
+  d <- sum(b[den])
+  g <- setNames(rep(0, length(b)), names(b))   # gradient of -a/d wrt every parameter
+  g[num] <- -1 / d
+  g[den] <- a / d^2
+  c(est = unname(-a / d), se = sqrt(as.numeric(t(g) %*% V[names(g), names(g)] %*% g)))
+}
+
+fmt_wtp <- function(r, digits) {
+  p <- 2 * pnorm(-abs(r[["est"]] / r[["se"]]))
+  sprintf("%.*f%s (%.*f)", digits, r[["est"]], sig_stars(p), digits, r[["se"]])
+}
+
+wtp_vars   <- c(ASC = "ASC", fish_catch = "Fish Catch", coral_coverage = "Coral Coverage",
+                coastal_conditions = "Coastal Development Restrictions")
+comm_names <- c(ASC = "ASC_comm", fish_catch = "fish_comm",
+                coral_coverage = "coral_comm", coastal_conditions = "coastal_comm")
+wtp_dig    <- c(ASC = 1, fish_catch = 3, coral_coverage = 3, coastal_conditions = 3)
+
+w1 <- models_real$m1
+w2 <- models_real$m2
+
+wtp_m1_nat <- sapply(names(wtp_vars), function(v)
+  fmt_wtp(wtp_est(w1, v, "payment"), wtp_dig[[v]]))
+wtp_m2_nat <- sapply(names(wtp_vars), function(v)
+  fmt_wtp(wtp_est(w2, v, "payment"), wtp_dig[[v]]))
+wtp_m2_com <- sapply(names(wtp_vars), function(v)
+  fmt_wtp(wtp_est(w2, c(v, comm_names[[v]]), c("payment", "pay_comm")), wtp_dig[[v]]))
+
+wtp_top   <- function(x) sub(" \\(.*$", "", x)
+wtp_below <- function(x) ifelse(x == "", "", sub("^.* ", "", x))
+wtp_stack <- function(x) as.vector(rbind(wtp_top(x), wtp_below(x)))
+
+wtp_labels <- c(unname(wtp_vars), paste0(wtp_vars, " (Community based MPA)"))
+wtp_tab <- data.frame(
+  Variable = as.vector(rbind(wtp_labels, "")),
+  m1       = wtp_stack(c(unname(wtp_m1_nat), rep("", 4))),
+  p1       = wtp_stack(c(paper_wtp_m1, rep("", 4))),
+  m2       = wtp_stack(c(unname(wtp_m2_nat), unname(wtp_m2_com))),
+  p2       = wtp_stack(paper_wtp_m2),
+  check.names = FALSE, row.names = NULL
+)
+names(wtp_tab) <- c("Variable", rep(c("Replication", "Paper"), 2))
+
+wtp_tab |>
+  kable(row.names = FALSE, align = "lcccc") |>
+  kable_styling(bootstrap_options = c("condensed"), full_width = FALSE, font_size = 14) |>
+  add_header_above(c(" " = 1, "Model 1" = 2, "Model 2" = 2), bold = TRUE) |>
+  row_spec(0, bold = TRUE, extra_css = "border-bottom: 1.5px solid #333333;") |>
+  row_spec(9, extra_css = "border-top: 1px solid #999999;") |>   # first community row
+  column_spec(4, border_left = TRUE) |>
+  footnote(general = c(
+    paste0("Respondents: ", n_resp, ". Choice situations: ", n_cs, "."),
+    "Standard errors are in parentheses under each WTP estimate. WTP is in yen per month for a 1% change in the attribute (ASC: yen per month for having an MPA). 100 yen is about 0.85 USD.",
+    "* p < 0.10, ** p < 0.05, *** p < 0.01, from a normal approximation to the delta-method standard error.",
+    "Paper: Table 4 of Shah et al. (2019), PLOS ONE 14(3): e0213354. Model 1 has no community rows because it has no management interactions."),
+    general_title = "Note: ", footnote_as_chunk = FALSE)
+```
+
+
+```{r}
+results_table(models_random$m1, placeholder = TRUE)
+```
+
+
+
+```{r}
+results_table(models_random$m2, placeholder = TRUE)
+```

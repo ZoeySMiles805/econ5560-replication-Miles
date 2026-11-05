@@ -1,0 +1,152 @@
+---
+title: "DataDictionary"
+format: html
+editor: visual
+execute: 
+  warning: false
+  echo: false
+---
+```{r}
+#Load in Libraries
+library(haven)
+library(dplyr)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(mlogit) 
+library(dfidx)
+```
+## Complete Data Dictionary
+```{r}
+datadictionary <- tibble::tribble(
+  ~group, ~variable, ~description, ~type, ~coding, ~notes,
+
+  # ---- Survey design and identifiers -------------------------------------------------
+  "Survey design and identifiers", "record_id", "Respondent ID", "Integer",
+  "824 unique respondents<br>Range 4 to 1208",
+  "18 rows per respondent (6 questions &times; 3 alternatives). IDs are not consecutive.",
+
+  "Survey design and identifiers", "survey_type", "Survey version: who manages the MPA", "Integer code",
+  "1 = National (central government), n = 422<br>2 = Community (local organizations), n = 402",
+  "In the Japanese originals, one phrase on the Part 2 intro page is the only difference between versions.",
+
+  "Survey design and identifiers", "SurveyNumber", "Survey block", "Integer",
+  "1 to 14",
+  "Each block holds six choice questions (blocked from the 81-question design).",
+
+  "Survey design and identifiers", "QuestionNumber", "Position of the question in the survey", "Integer",
+  "2 to 7",
+  "Question 1 was a dummy warm-up and was dropped, leaving six per respondent.",
+
+  "Survey design and identifiers", "ChoiceSet", "Choice-question ID within the survey versions", "Integer",
+  "84 distinct values (2 to 98)",
+  "14 blocks &times; 6 questions. Inferred from the data.",
+
+  "Survey design and identifiers", "OriginalSet", "Question ID in the 81-question experimental design", "Integer",
+  "1 to 81",
+  "Orthogonal fractional factorial design. Coding inferred from the data.",
+
+  "Survey design and identifiers", "Cid", "Choice-situation ID (respondent &times; question)", "Integer (stored as float)",
+  "4,944 distinct values",
+  "Exactly 3 rows each. Used as the choice-set identifier in the logit model.",
+
+  "Survey design and identifiers", "record_iidd", "Row ID", "Integer (stored as float)",
+  "14,832 unique values",
+  "One row per respondent &times; question &times; alternative.",
+
+  # ---- Respondent characteristics ----------------------------------------------------
+  "Respondent characteristics", "gender", "Gender", "Integer code",
+  "1 = Male (n = 406)<br>2 = Female (n = 418)",
+  "Stored as text in the raw file. Coding confirmed by the paper's Table 2.",
+
+  "Respondent characteristics", "age", "Age in years", "Integer",
+  "19 to 56<br>Mean 41.6",
+  "Top-coded: 56 means 56 or older (101 respondents). Stored as text in the raw file.",
+
+  "Respondent characteristics", "children_HH", "Children under 18 in the household", "Integer",
+  "0 to 5<br>Mean 0.79",
+  "Stored as text with a leading zero (for example &quot;01&quot;) in the raw file.",
+
+  "Respondent characteristics", "annual_income", "Annual household income category", "Ordinal code",
+  "1 = under 1M yen (45)<br>2 = 1M to 2M yen (85)<br>3 = 2M to 5M yen (348)<br>4 = 5M to 7M yen (113)<br>5 = 7M yen or more (89)<br>6 = don't know / prefer not to answer (144)",
+  "Code 6 is a non-response, not an income level. The paper's Table 2 means count it as 6.",
+
+  "Respondent characteristics", "employment_status", "Employment status (choose one)", "Integer code",
+  "1 = Full-time work (384)<br>2 = Part-time work (100)<br>3 = Self-employed (90)<br>4 = Full-time student (20)<br>5 = Part-time student (1)<br>6 = Full-time homemaker (133)<br>7 = Retired (19)<br>8 = Unemployed (68)<br>9 = Other (9)",
+  "Labels from the Japanese survey form. The English community supplement's &quot;Recent graduate&quot; for code 6 is a translation error.",
+
+  "Respondent characteristics", "birth_location", "Birthplace", "Integer code",
+  "1 = Okinawa Prefecture (569)<br>2 = Outside Okinawa, in Japan (254)<br>3 = Overseas (1)",
+  "Paper's text reports three born outside Japan; the file has one.",
+
+  # ---- Choice attributes -------------------------------------------------------------
+  "Choice attributes", "fish_catch", "Leisure fish catch after 10 years (% change)", "Numeric",
+  "30, 15, 0 = MPA options<br>-15 = status quo",
+  "Average catch per recreational fishing trip.",
+
+  "Choice attributes", "coral_coverage", "Coral coverage and marine biodiversity after 10 years (% change)", "Numeric",
+  "30, 15, 0 = MPA options<br>-15 = status quo",
+  "Extent and health of reefs and the number of marine species.",
+
+  "Choice attributes", "coastal_conditions", "Shoreline and coastal conditions after 10 years", "Numeric",
+  "30, 15, 0 = MPA options<br>-15 = status quo",
+  "Coded so higher is better: 30 means 30% less development and a more intact shoreline; -15 means 15% more development.",
+
+  "Choice attributes", "contribution", "Monthly contribution (payment attribute), yen", "Numeric",
+  "100, 200, 400, 600, 800, 1000 = MPA options<br>0 = status quo",
+  "Paid by all Okinawan residents. 100 yen is about 0.85 USD.",
+
+  "Choice attributes", "ASC", "Alternative-specific constant (MPA indicator)", "Binary",
+  "1 = one of the two MPA options<br>0 = no-MPA status quo",
+  "Exactly one status-quo row per choice question (attributes -15, -15, -15 and payment 0).",
+
+  # ---- Constructed in the analysis ---------------------------------------------------
+  "Constructed in the analysis (not in the raw file)", "alt", "Alternative position within a choice question", "Integer",
+  "1, 2 = MPA options<br>3 = status quo",
+  "Created after sorting each question so the status quo is last.",
+
+  "Constructed in the analysis (not in the raw file)", "choice", "Selected alternative", "Logical",
+  "TRUE = chosen<br>FALSE = not chosen",
+  "<b>Randomly generated placeholder</b>: the shared data has no choice column. Replace with real answers before reporting results.",
+
+  "Constructed in the analysis (not in the raw file)", "community", "Community-based survey dummy", "Binary",
+  "1 = survey_type 2<br>0 = survey_type 1",
+  "Used to build the interaction terms in Model 2.",
+
+  "Constructed in the analysis (not in the raw file)", "payment", "Contribution used in the models, yen", "Numeric",
+  "Same values as contribution",
+  "Coefficients are per yen, as in the paper.",
+
+  "Constructed in the analysis (not in the raw file)", "fish_comm, coral_comm, coastal_comm, pay_comm, ASC_comm", "Attribute &times; community interactions", "Numeric",
+  "Each attribute multiplied by community",
+  "Model 2 terms.",
+
+  "Constructed in the analysis (not in the raw file)", "gender_female, okinawa", "Indicator versions used for Table 2", "Binary",
+  "gender_female = 1 if gender is 2<br>okinawa = 1 if birth_location is 1",
+  "Means of these give the paper's gender and born-in-Okinawa rows.",
+
+  "Constructed in the analysis (not in the raw file)", "income_valid", "Income with non-responses removed", "Ordinal code",
+  "annual_income 1 to 5; code 6 set to missing",
+  "Used for the secondary summary table."
+)
+```
+
+```{r}
+idx <- unique(datadictionary$group)
+pack_index <- setNames(as.integer(table(factor(datadictionary$group, levels = idx))), idx)
+
+datadictionary |>
+  transmute(Variable = variable, Description = description, Type = type,
+            `Values and coding` = coding, Notes = notes) |>
+  kable(escape = FALSE, align = "lllll") |>
+  kable_styling(bootstrap_options = c("condensed", "hover"), full_width = TRUE,
+                font_size = 13) |>
+  row_spec(0, bold = TRUE, color = "white", background = "#1f3a5f") |>
+  column_spec(1, bold = TRUE, monospace = TRUE, width = "11em", color = "#1f3a5f") |>
+  column_spec(2, width = "15em") |>
+  column_spec(3, width = "7em", color = "#555555") |>
+  column_spec(4, width = "20em") |>
+  column_spec(5, width = "20em", color = "#555555") |>
+  pack_rows(index = pack_index, background = "#e8eef6", color = "#1f3a5f",
+            bold = TRUE, label_row_css = "border-top: 2px solid #1f3a5f;")
+```
