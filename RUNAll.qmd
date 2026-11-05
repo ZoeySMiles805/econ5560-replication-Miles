@@ -23,7 +23,7 @@ library(dfidx)
 
 ```{r}
 # Load the revised dataset (
-data <- read_excel("MPA_journal_data_with_choice_for_CalPolyFA2026.xlsx",
+data <- read_excel("Data.xlsx",
                    sheet = "Data")
 ```
 
